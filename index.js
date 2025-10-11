@@ -1,5 +1,4 @@
-const RATE_LIMITS = new Map();
-
+// Enhanced Cloudflare Worker with better CORS and error handling
 export default {
   async fetch(request, env) {
     const origin = request.headers.get('Origin') || '*';
@@ -10,7 +9,7 @@ export default {
         headers: {
           'Access-Control-Allow-Origin': origin,
           'Access-Control-Allow-Methods': 'POST, OPTIONS',
-          'Access-Control-Allow-Headers': 'Content-Type, Authorization',
+          'Access-Control-Allow-Headers': 'Content-Type, Authorization, User-Token',
           'Access-Control-Max-Age': '86400',
         },
       });
@@ -50,7 +49,7 @@ export default {
         // Check if user exceeded limit
         if (userLimits.count >= maxRequests) {
           return new Response(JSON.stringify({ 
-            error: 'Rate limit exceeded. Please wait 1 minute or upgrade to premium.' 
+            error: 'Rate limit exceeded. Please wait 1 minute.' 
           }), { 
             status: 429,
             headers: { 
@@ -82,6 +81,11 @@ export default {
         }),
       });
 
+      if (!openaiResponse.ok) {
+        const errorData = await openaiResponse.json();
+        throw new Error(`OpenAI API error: ${errorData.error?.message || openaiResponse.statusText}`);
+      }
+
       const data = await openaiResponse.json();
       
       return new Response(JSON.stringify(data), {
@@ -91,7 +95,10 @@ export default {
         },
       });
     } catch (error) {
-      return new Response(JSON.stringify({ error: error.message }), {
+      console.error('Worker Error:', error);
+      return new Response(JSON.stringify({ 
+        error: error.message || 'Internal server error' 
+      }), {
         status: 500,
         headers: {
           'Content-Type': 'application/json',
@@ -101,3 +108,6 @@ export default {
     }
   },
 };
+
+// In-memory rate limiting (resets on worker restart)
+const RATE_LIMITS = new Map();
