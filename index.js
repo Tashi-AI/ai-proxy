@@ -2,19 +2,28 @@ const RATE_LIMITS = new Map();
 
 export default {
   async fetch(request, env) {
+    const origin = request.headers.get('Origin') || '*';
+    
     // Handle CORS preflight
     if (request.method === 'OPTIONS') {
       return new Response(null, {
         headers: {
-          'Access-Control-Allow-Origin': '*',
+          'Access-Control-Allow-Origin': origin,
           'Access-Control-Allow-Methods': 'POST, OPTIONS',
           'Access-Control-Allow-Headers': 'Content-Type, Authorization',
+          'Access-Control-Max-Age': '86400',
         },
       });
     }
 
     if (request.method !== 'POST') {
-      return new Response('Method not allowed', { status: 405 });
+      return new Response('Method not allowed', { 
+        status: 405,
+        headers: {
+          'Access-Control-Allow-Origin': origin,
+          'Content-Type': 'text/plain'
+        }
+      });
     }
 
     try {
@@ -46,7 +55,7 @@ export default {
             status: 429,
             headers: { 
               'Content-Type': 'application/json', 
-              'Access-Control-Allow-Origin': '*'
+              'Access-Control-Allow-Origin': origin
             }
           });
         }
@@ -78,7 +87,7 @@ export default {
       return new Response(JSON.stringify(data), {
         headers: {
           'Content-Type': 'application/json',
-          'Access-Control-Allow-Origin': '*',
+          'Access-Control-Allow-Origin': origin,
         },
       });
     } catch (error) {
@@ -86,7 +95,7 @@ export default {
         status: 500,
         headers: {
           'Content-Type': 'application/json',
-          'Access-Control-Allow-Origin': '*',
+          'Access-Control-Allow-Origin': origin,
         },
       });
     }
