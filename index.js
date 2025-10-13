@@ -113,7 +113,7 @@ export default {
     } catch (error) {
       console.error('Worker Error:', error);
       return new Response(JSON.stringify({ 
-        error: 'AI service temporarily unavailable. Please try again.' // ✅ User-friendly
+        error: 'AI service temporarily unavailable. Please try again.'
       }), {
         status: 500,
         headers: {
@@ -125,52 +125,163 @@ export default {
   },
 };
 
-// ✅ ADD THIS FUNCTION TO YOUR CLOUDFLARE WORKER
+// ✅ UPDATED: Firebase Admin SDK Integration
 async function validateUserAndDeductTokens(userId, env) {
   try {
-    // Call Firebase to check and deduct tokens
-    const firebaseUrl = `https://firestore.googleapis.com/v1/projects/surveymonk-service/databases/(default)/documents/users/${userId}`;
+    // Use Firebase REST API
+    const firestoreUrl = `https://firestore.googleapis.com/v1/projects/${env.FIREBASE_PROJECT_ID}/databases/(default)/documents/users/${userId}`;
     
-    // First, get current token balance
-    const userDoc = await fetch(firebaseUrl, {
+    // Get current user data using Service Account token
+    const accessToken = await getAccessToken(env);
+    const userResponse = await fetch(firestoreUrl, {
       headers: {
-        'Authorization': `Bearer ${env.FIREBASE_ADMIN_TOKEN}` // You'll need to set this up
+        'Authorization': `Bearer ${accessToken}`,
+        'Content-Type': 'application/json'
       }
     });
-    
-    if (!userDoc.ok) {
-      console.error('Firebase user fetch failed');
+
+    if (!userResponse.ok) {
+      console.error('Failed to fetch user:', await userResponse.text());
       return false;
     }
-    
-    const userData = await userDoc.json();
+
+    const userData = await userResponse.json();
     const tokensRemaining = userData.fields?.tokensRemaining?.integerValue || 0;
-    
+
+    // Check if user has tokens
     if (tokensRemaining <= 0) {
       return false;
     }
-    
-    // Deduct 1 token
-    const updateUrl = `${firebaseUrl}?updateMask.fieldPaths=tokensRemaining`;
-    const updateResponse = await fetch(updateUrl, {
+
+    // Deduct 1 token using Firestore REST API
+    const updateResponse = await fetch(firestoreUrl, {
       method: 'PATCH',
       headers: {
-        'Authorization': `Bearer ${env.FIREBASE_ADMIN_TOKEN}`,
+        'Authorization': `Bearer ${accessToken}`,
         'Content-Type': 'application/json'
       },
       body: JSON.stringify({
         fields: {
-          tokensRemaining: { integerValue: tokensRemaining - 1 }
+          tokensRemaining: { integerValue: tokensRemaining - 1 },
+          lastTokenUse: { timestampValue: new Date().toISOString() },
+          totalTokensUsed: { integerValue: (userData.fields?.totalTokensUsed?.integerValue || 0) + 1 }
         }
       })
     });
-    
-    return updateResponse.ok;
-    
+
+    if (!updateResponse.ok) {
+      console.error('Failed to update tokens:', await updateResponse.text());
+      return false;
+    }
+
+    console.log(`✅ Deducted 1 token from user ${userId}. Remaining: ${tokensRemaining - 1}`);
+    return true;
+
   } catch (error) {
     console.error('Token validation failed:', error);
     return false;
   }
+}
+
+// ✅ Get Google Access Token using Service Account
+async function getAccessToken(env) {
+  try {
+    // For Cloudflare Workers, we need to use the Service Account key directly
+    // This is a simplified approach using the private key
+    const serviceAccount = {
+      "type": "service_account",
+      "project_id": env.FIREBASE_PROJECT_ID,
+      "private_key_id": env.FIREBASE_PRIVATE_KEY_ID,
+      "private_key": env.FIREBASE_PRIVATE_KEY.replace(/\\n/g, '\n'),
+      "client_email": env.FIREBASE_CLIENT_EMAIL,
+      "client_id": env.FIREBASE_CLIENT_ID,
+      "auth_uri": "https://accounts.google.com/o/oauth2/auth",
+      "token_uri": "https://oauth2.googleapis.com/token",
+      "auth_provider_x509_cert_url": "https://www.googleapis.com/oauth2/v1/certs"
+    };
+
+    // Create JWT manually
+    const header = {
+      alg: 'RS256',
+      typ: 'JWT',
+      kid: serviceAccount.private_key_id
+    };
+
+    const now = Math.floor(Date.now() / 1000);
+    const payload = {
+      iss: serviceAccount.client_email,
+      scope: 'https://www.googleapis.com/auth/datastore',
+      aud: serviceAccount.token_uri,
+      exp: now + 3600,
+      iat: now
+    };
+
+    // Base64 encode header and payload
+    const base64Header = btoa(JSON.stringify(header)).replace(/=/g, '');
+    const base64Payload = btoa(JSON.stringify(payload)).replace(/=/g, '');
+    const signatureInput = `${base64Header}.${base64Payload}`;
+
+    // Import the crypto module for signing
+    const encoder = new TextEncoder();
+    const data = encoder.encode(signatureInput);
+    
+    // Import the private key
+    const privateKey = await crypto.subtle.importKey(
+      'pkcs8',
+      base64ToArrayBuffer(serviceAccount.private_key),
+      {
+        name: 'RSASSA-PKCS1-v1_5',
+        hash: 'SHA-256'
+      },
+      false,
+      ['sign']
+    );
+
+    // Sign the JWT
+    const signature = await crypto.subtle.sign(
+      'RSASSA-PKCS1-v1_5',
+      privateKey,
+      data
+    );
+
+    const base64Signature = arrayBufferToBase64(signature);
+    const jwt = `${signatureInput}.${base64Signature}`;
+
+    // Exchange JWT for access token
+    const response = await fetch(serviceAccount.token_uri, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/x-www-form-urlencoded',
+      },
+      body: `grant_type=urn:ietf:params:oauth:grant-type:jwt-bearer&assertion=${jwt}`
+    });
+
+    const tokenData = await response.json();
+    return tokenData.access_token;
+
+  } catch (error) {
+    console.error('Failed to get access token:', error);
+    throw error;
+  }
+}
+
+// Helper functions for crypto operations
+function base64ToArrayBuffer(base64) {
+  const binaryString = atob(base64);
+  const bytes = new Uint8Array(binaryString.length);
+  for (let i = 0; i < binaryString.length; i++) {
+    bytes[i] = binaryString.charCodeAt(i);
+  }
+  return bytes.buffer;
+}
+
+function arrayBufferToBase64(buffer) {
+  const bytes = new Uint8Array(buffer);
+  let binary = '';
+  for (let i = 0; i < bytes.byteLength; i++) {
+    binary += String.fromCharCode(bytes[i]);
+  }
+  return btoa(binary).replace(/=/g, '');
 }
 
 // In-memory rate limiting (resets on worker restart)
