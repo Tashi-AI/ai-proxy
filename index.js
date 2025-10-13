@@ -1,17 +1,12 @@
-// In-memory rate limiting (resets on worker restart)
-const RATE_LIMITS = new Map();
-
-// Enhanced Cloudflare Worker for AI Proxy
+// Enhanced Cloudflare Worker with better error reporting
 export default {
     async fetch(request, env) {
         const origin = request.headers.get('Origin') || '*';
-
-        // Define CORS headers once
         const corsHeaders = {
             'Content-Type': 'application/json',
             'Access-Control-Allow-Origin': origin
         };
-        
+
         // Handle CORS preflight
         if (request.method === 'OPTIONS') {
             return new Response(null, {
@@ -27,68 +22,34 @@ export default {
         if (request.method !== 'POST') {
             return new Response('Method not allowed', { 
                 status: 405,
-                headers: {
-                    ...corsHeaders,
-                    'Content-Type': 'text/plain'
-                }
+                headers: corsHeaders
             });
         }
 
-        // --- NEW: SECRET AUTH CHECK ---
-        // This key must match the secret configured in your Cloudflare secrets.
-        const WORKER_SECRET = env.WORKER_SECRET; 
+        // Enhanced secret verification with logging
+        const authHeader = request.headers.get('Authorization');
+        const expectedSecret = `Bearer ${env.WORKER_SECRET}`;
+        
+        console.log(`[AUTH] Received: ${authHeader ? authHeader.substring(0, 10) + '...' : 'MISSING'}`);
+        console.log(`[AUTH] Expected: ${expectedSecret.substring(0, 10)}...`);
 
-        if (request.headers.get('Authorization') !== `Bearer ${WORKER_SECRET}`) {
-            return new Response(JSON.stringify({ error: 'Unauthorized access to proxy' }), { 
+        if (authHeader !== expectedSecret) {
+            return new Response(JSON.stringify({ 
+                error: 'Unauthorized access to proxy',
+                detail: 'Check WORKER_SECRET configuration'
+            }), { 
                 status: 401, 
                 headers: corsHeaders 
             });
         }
-        // --- END NEW SECRET AUTH CHECK ---
 
         try {
-            // Updated destructuring: userToken is replaced by userIdForLogging
-            // The Firebase Cloud Function now sends the actual userId here for logging/rate limiting.
-            const { messages, userIdForLogging, model = 'gpt-3.5-turbo', max_tokens = 500 } = await request.json();
+            const requestBody = await request.json();
+            const { messages, userIdForLogging, model = 'gpt-3.5-turbo', max_tokens = 500 } = requestBody;
 
-            // === RATE LIMITING (Now applied to the secure caller ID) ===
-            // This rate limits the Cloud Function's calls per user, preventing abuse.
-            if (userIdForLogging) {
-                const now = Date.now();
-                const userKey = `rate_limit_${userIdForLogging}`;
-                const windowMs = 60000; // 1 minute
-                const maxRequests = 10; // 10 requests per minute
-                
-                const userLimits = RATE_LIMITS.get(userKey) || { 
-                    count: 0, 
-                    resetTime: now + windowMs 
-                };
-                
-                // Reset counter if window expired
-                if (now > userLimits.resetTime) {
-                    userLimits.count = 0;
-                    userLimits.resetTime = now + windowMs;
-                }
-                
-                // Check if user exceeded limit
-                if (userLimits.count >= maxRequests) {
-                    return new Response(JSON.stringify({ 
-                        error: 'Rate limit exceeded. Please wait 1 minute.' 
-                    }), { 
-                        status: 429,
-                        headers: corsHeaders
-                    });
-                }
-                
-                // Increment counter
-                userLimits.count++;
-                RATE_LIMITS.set(userKey, userLimits);
-            }
+            console.log(`[REQUEST] User: ${userIdForLogging}, Model: ${model}, Messages: ${messages.length}`);
 
-            // === USAGE TRACKING (Updated to use userIdForLogging) ===
-            console.log(`[USAGE] User: ${userIdForLogging || 'unknown_function'}, Messages: ${messages.length}, Timestamp: ${new Date().toISOString()}`);
-
-            // === AI REQUEST ===
+            // Your existing OpenAI call logic...
             const openaiResponse = await fetch('https://api.openai.com/v1/chat/completions', {
                 method: 'POST',
                 headers: {
@@ -104,19 +65,22 @@ export default {
 
             if (!openaiResponse.ok) {
                 const errorData = await openaiResponse.json();
+                console.error(`[OPENAI ERROR] ${openaiResponse.status}:`, errorData);
                 throw new Error(`OpenAI API error: ${errorData.error?.message || openaiResponse.statusText}`);
             }
 
             const data = await openaiResponse.json();
+            console.log(`[SUCCESS] User: ${userIdForLogging}, Tokens: ${data.usage?.total_tokens}`);
             
-            // Final response uses the pre-defined corsHeaders
             return new Response(JSON.stringify(data), {
                 headers: corsHeaders
             });
+
         } catch (error) {
             console.error('Worker Error:', error);
             return new Response(JSON.stringify({ 
-                error: 'AI service temporarily unavailable. Please try again.'
+                error: 'AI service temporarily unavailable.',
+                detail: error.message
             }), {
                 status: 500,
                 headers: corsHeaders
@@ -124,5 +88,3 @@ export default {
         }
     },
 };
-// Note: All Firebase/Google Auth helper functions (validateUserAndDeductTokens, getAccessToken, etc.) 
-// have been successfully removed as per the security migration plan.
