@@ -1,3 +1,11 @@
 name = "ai-proxy-money"
 main = "index.js"
-compatibility_date = "2024-01-01"
+compatibility_date = "2024-10-13"
+
+[vars]
+WORKER_SECRET = "SurveyMonk-AI-BD99E2DEA8BD4-Firebase.Cloudflare-Key"
+
+[[rules]]
+type = "WorkerScript"
+globs = ["**/*.js"]
+fallthrough = true
