@@ -3,9 +3,8 @@ main = "index.js"
 compatibility_date = "2024-10-13"
 
 [vars]
-WORKER_SECRET = "SurveyMonk-AI-BD99E2DEA8BD4-Firebase.Cloudflare-Key"
 
 [[rules]]
-type = "WorkerScript"
+type = "ESModule"
 globs = ["**/*.js"]
 fallthrough = true
