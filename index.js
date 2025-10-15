@@ -1,4 +1,4 @@
-// Enhanced Cloudflare Worker with better error reporting
+// Enhanced Cloudflare Worker with better error reporting and validation
 export default {
     async fetch(request, env) {
         const origin = request.headers.get('Origin') || '*';
@@ -47,7 +47,23 @@ export default {
             const requestBody = await request.json();
             const { messages, userIdForLogging, model = 'gpt-3.5-turbo', max_tokens = 500 } = requestBody;
 
-            console.log(`[REQUEST] User: ${userIdForLogging}, Model: ${model}, Messages: ${messages.length}`);
+            // ✅ ADDED: Request Validation
+            if (!messages || !Array.isArray(messages)) {
+                return new Response(JSON.stringify({ 
+                    error: 'Invalid request: messages array is required'
+                }), { 
+                    status: 400, 
+                    headers: corsHeaders 
+                });
+            }
+
+            if (!userIdForLogging) {
+                console.warn('[WARNING] Request missing userIdForLogging');
+            }
+
+            // ✅ ADDED: Enhanced Logging
+            console.log(`[REQUEST] User: ${userIdForLogging}, Model: ${model}, Messages: ${messages.length}, MaxTokens: ${max_tokens}`);
+            console.log(`[MESSAGE SAMPLE] First message: ${messages[0]?.content?.substring(0, 100)}...`);
 
             // Your existing OpenAI call logic...
             const openaiResponse = await fetch('https://api.openai.com/v1/chat/completions', {
